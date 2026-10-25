@@ -1,0 +1,99 @@
+/* Design tokens: docs/04-ui-ux-obsidian-spec.md §1. Components use tokens only. */
+@import 'tailwindcss';
+
+:root {
+	/* surfaces */
+	--bg-canvas: #0f0f11;
+	--bg-panel: #16161a;
+	--bg-hover: #1d1d23;
+	--bg-active: #23232b;
+	--bg-input: #121215;
+	--border: #26262e;
+	--border-strong: #33333d;
+
+	/* text */
+	--text-primary: #e2e2e8;
+	--text-muted: #7c7c8a;
+	--text-faint: #55555f;
+
+	/* accent & state */
+	--accent: #8b7cf6;
+	--accent-fg: #0f0f11;
+	--state-ok: #4fb87a;
+	--state-warn: #d6a249;
+	--state-error: #e05d5d;
+	--state-info: #5b9bd5;
+
+	/* type */
+	--font-ui: system-ui, -apple-system, 'Segoe UI', 'Inter', 'Noto Sans', sans-serif;
+	--font-mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace;
+	--fs-xs: 11px;
+	--fs-sm: 12px;
+	--fs-md: 13px;
+	--fs-lg: 15px;
+	--lh: 1.45;
+
+	/* geometry */
+	--radius: 4px;
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--ribbon-w: 36px;
+	--sidebar-w: 260px;
+	--tabbar-h: 30px;
+	--statusbar-h: 22px;
+	--divider-hit: 6px;
+
+	--transition: 0ms;
+}
+
+/* Expose tokens as Tailwind utilities (bg-canvas, text-muted, border-line, font-mono, ...). */
+@theme inline {
+	--color-canvas: var(--bg-canvas);
+	--color-panel: var(--bg-panel);
+	--color-hover: var(--bg-hover);
+	--color-active: var(--bg-active);
+	--color-input: var(--bg-input);
+	--color-line: var(--border);
+	--color-line-strong: var(--border-strong);
+	--color-primary: var(--text-primary);
+	--color-muted: var(--text-muted);
+	--color-faint: var(--text-faint);
+	--color-accent: var(--accent);
+	--color-accent-fg: var(--accent-fg);
+	--color-ok: var(--state-ok);
+	--color-warn: var(--state-warn);
+	--color-error: var(--state-error);
+	--color-info: var(--state-info);
+	--font-ui: var(--font-ui);
+	--font-mono: var(--font-mono);
+	--text-xs: var(--fs-xs);
+	--text-sm: var(--fs-sm);
+	--text-md: var(--fs-md);
+	--text-lg: var(--fs-lg);
+	--radius-ui: var(--radius);
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	background: var(--bg-canvas);
+	color: var(--text-primary);
+	font-family: var(--font-ui);
+	font-size: var(--fs-md);
+	line-height: var(--lh);
+}
+
+*,
+*::before,
+*::after {
+	transition-duration: var(--transition) !important;
+	animation-duration: var(--transition) !important;
+}
+
+:focus-visible {
+	outline: 1px solid var(--accent);
+	outline-offset: -1px;
+}

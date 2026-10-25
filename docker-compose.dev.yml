@@ -1,0 +1,35 @@
+# Disposable development targets. Never use in production.
+#   docker compose -f docker-compose.dev.yml up -d --build
+# Test SSH target: 127.0.0.1:2222, user devuser / password devpass,
+# key: dev/.generated/devuser_ed25519 (generated on first `up`).
+name: gateway-dev
+
+services:
+  # One-shot: generates the devuser Ed25519 keypair into ./dev/.generated (git-ignored),
+  # owned by the user who owns that directory. Skips if the key already exists.
+  dev-keys:
+    build: ./dev/targets/ssh
+    image: gateway-dev/ssh-target:local
+    entrypoint: ["/usr/local/bin/gen-dev-keys.sh"]
+    volumes:
+      - ./dev/.generated:/out
+    restart: "no"
+
+  test-ssh-target:
+    build: ./dev/targets/ssh
+    image: gateway-dev/ssh-target:local
+    depends_on:
+      dev-keys:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:2222:22"
+    volumes:
+      - ./dev/.generated/devuser_ed25519.pub:/dev-keys/devuser_ed25519.pub:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
+      interval: 30s
+      timeout: 2s
+      retries: 3
+      start_period: 15s
+      start_interval: 1s
+    restart: unless-stopped

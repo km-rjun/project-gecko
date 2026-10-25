@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/vault",
+    "crates/protocol-core",
+    "crates/edge-proto",
+    "crates/gateway",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+repository = "https://github.com/km-rjun/project-gecko"
+publish = false
+
+[workspace.dependencies]
+vault = { path = "crates/vault" }
+protocol-core = { path = "crates/protocol-core" }
+edge-proto = { path = "crates/edge-proto" }
+
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4.6", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+http-body-util = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

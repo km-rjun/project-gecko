@@ -1,0 +1,22 @@
+# Test target only.
+Port 22
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+PermitRootLogin no
+AllowUsers devuser
+PubkeyAuthentication yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+AuthorizedKeysFile .ssh/authorized_keys
+
+X11Forwarding no
+AllowTcpForwarding no
+PrintMotd no
+LogLevel VERBOSE
+# Tests deliberately make failing/unauthenticated connections; do not penalise them.
+PerSourcePenalties no
+Subsystem sftp internal-sftp

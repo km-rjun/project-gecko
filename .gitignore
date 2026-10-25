@@ -1,0 +1,31 @@
+# Internal documentation vault (separate private repo)
+/docs/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / SvelteKit (web/.gitignore covers web specifics)
+node_modules/
+.svelte-kit/
+.env
+.env.*
+!.env.example
+
+# Gateway runtime state
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Dev harness generated material (keys, certs); directory kept via .gitkeep
+/dev/.generated/*
+!/dev/.generated/.gitkeep
+
+# Dev / OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

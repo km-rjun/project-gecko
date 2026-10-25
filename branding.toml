@@ -1,0 +1,3 @@
+# Single rename point for the product. Everything else in the code base is named functionally.
+# Read at build time by crates/gateway/build.rs and web/vite.config.ts.
+display_name = "Project Gecko"
