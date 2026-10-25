@@ -158,14 +158,14 @@ pub async fn redeem(
     }
     tx.commit().await?;
 
-    let (token, session_hash) = session::create(
+    let (token, sid) = session::create(
         &state,
         &user_id,
         &ip.to_string(),
         &session::user_agent(&headers),
     )
     .await?;
-    state.keyring.insert(session_hash, &user_id, enrolled.mvk);
+    state.keyring.insert(&sid, &user_id, enrolled.mvk);
     audit::record(
         &state,
         Event::new("user.created", Outcome::Success)

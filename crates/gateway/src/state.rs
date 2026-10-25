@@ -8,6 +8,7 @@ use vault::KdfParams;
 
 use crate::{
     config::{Config, TlsMode},
+    hub::Hub,
     keyring::Keyring,
     ratelimit::Limiters,
 };
@@ -43,6 +44,7 @@ pub struct Inner {
     pub db: SqlitePool,
     pub settings: Settings,
     pub keyring: Keyring,
+    pub hub: Hub,
     pub limits: Limiters,
     pub argon: Semaphore,
     /// Serialises audit appends so the hash chain stays linear.
@@ -65,6 +67,7 @@ impl AppState {
     pub fn new(db: SqlitePool, settings: Settings, argon_concurrency: usize) -> Self {
         Self(Arc::new(Inner {
             keyring: Keyring::new(settings.vault_idle_lock),
+            hub: Hub::default(),
             db,
             settings,
             limits: Limiters::default(),

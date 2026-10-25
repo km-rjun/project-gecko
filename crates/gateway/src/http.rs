@@ -47,6 +47,7 @@ pub fn router(state: AppState) -> Router {
             post(nodes::reset_host_identity),
         )
         .route("/api/audit", get(audit_api::own))
+        .route("/api/ws", get(crate::ws::upgrade))
         .route(
             "/api/admin/invites",
             get(invites::list).post(invites::create),
@@ -96,21 +97,15 @@ pub async fn housekeeping(state: &AppState) -> anyhow::Result<()> {
     }
     let idle_ms = i64::try_from(state.settings.session_idle.as_millis()).unwrap_or(i64::MAX);
     let now = now_ms();
-    let expired: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT token_hash FROM auth_sessions WHERE expires_at <= ? OR last_seen_at < ?",
+    let expired: Vec<String> = sqlx::query_scalar(
+        "SELECT session_id FROM auth_sessions WHERE expires_at <= ? OR last_seen_at < ?",
     )
     .bind(now)
     .bind(now.saturating_sub(idle_ms))
     .fetch_all(&state.db)
     .await?;
-    for hash in expired {
-        if let Ok(h) = <[u8; 32]>::try_from(hash.as_slice()) {
-            state.keyring.remove(&h);
-        }
-        sqlx::query("DELETE FROM auth_sessions WHERE token_hash = ?")
-            .bind(&hash)
-            .execute(&state.db)
-            .await?;
+    for id in expired {
+        crate::session::end(state, &id).await?;
     }
     state.limits.housekeeping();
     Ok(())

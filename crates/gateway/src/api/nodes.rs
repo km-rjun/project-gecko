@@ -237,6 +237,9 @@ impl NodeInput {
         {
             return Err(bad("ephemeral nodes cannot store secrets"));
         }
+        if let Some(Some(Some(key))) = self.secrets.as_ref().map(|s| s.private_key.as_ref()) {
+            protocol_core::ssh::check_private_key(key.expose()).map_err(bad)?;
+        }
         Ok(NodeMeta {
             name: name.to_owned(),
             group_path: self.group_path.trim().to_owned(),
@@ -680,4 +683,106 @@ pub async fn reset_host_identity(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Everything a stream needs to connect to a node (plaintext lives only in memory and is
+/// zeroized on drop).
+#[derive(Debug)]
+pub struct ConnectTarget {
+    pub node_id: String,
+    pub name: String,
+    pub protocol: String,
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub auth_method: String,
+    pub ephemeral: bool,
+    pub edge_pool_id: Option<String>,
+    pub allow_clipboard_paste: bool,
+    pub allow_clipboard_copy: bool,
+    pub password: Option<SecretString>,
+    pub private_key: Option<SecretString>,
+    pub key_passphrase: Option<SecretString>,
+    /// Pinned identity: (kind, algorithm, fingerprint, public key bytes).
+    pub pinned: Option<PinnedIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedIdentity {
+    pub kind: String,
+    pub algorithm: String,
+    pub fingerprint: String,
+    /// Base64 (standard) of the SSH wire-format public key / RDP SPKI.
+    pub public_key: String,
+}
+
+/// Loads and decrypts a node for connecting (ownership enforced).
+pub async fn connect_target(
+    state: &AppState,
+    mvk: &Mvk,
+    user_id: &str,
+    node_id: &str,
+) -> ApiResult<ConnectTarget> {
+    let row = load_row(state, user_id, node_id).await?;
+    let meta = open_meta(mvk, &row)?;
+    let bundle = if row.ephemeral_auth {
+        Bundle::default()
+    } else {
+        load_bundle(state, mvk, user_id, node_id).await?
+    };
+    let pin: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as("SELECT nonce, ciphertext FROM node_host_identities WHERE node_id = ? AND owner_user_id = ?")
+        .bind(node_id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?;
+    let pinned = match pin {
+        None => None,
+        Some((nonce, ct)) => {
+            let plain = mvk.open(RecordKind::HostIdentity, user_id, node_id, &nonce, &ct)?;
+            Some(serde_json::from_slice(plain.expose()).map_err(|_| ApiError::Integrity)?)
+        }
+    };
+    Ok(ConnectTarget {
+        node_id: row.id,
+        name: meta.name,
+        protocol: meta.protocol,
+        host: meta.host,
+        port: meta.port,
+        username: meta.username,
+        auth_method: meta.auth_method,
+        ephemeral: row.ephemeral_auth,
+        edge_pool_id: row.edge_pool_id,
+        allow_clipboard_paste: row.allow_clipboard_paste,
+        allow_clipboard_copy: row.allow_clipboard_copy,
+        password: bundle.password,
+        private_key: bundle.private_key,
+        key_passphrase: bundle.key_passphrase,
+        pinned,
+    })
+}
+
+/// Stores (replaces) the pinned host identity of a node (TOFU approval, D-043).
+pub async fn pin_host_identity(
+    state: &AppState,
+    mvk: &Mvk,
+    user_id: &str,
+    node_id: &str,
+    id: &PinnedIdentity,
+) -> ApiResult<()> {
+    let plain = serde_json::to_vec(id).map_err(ApiError::internal)?;
+    let sealed = mvk.seal(RecordKind::HostIdentity, user_id, node_id, &plain)?;
+    sqlx::query(
+        "INSERT INTO node_host_identities (node_id, owner_user_id, aead, nonce, ciphertext, approved_at) VALUES (?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(node_id) DO UPDATE SET aead = excluded.aead, nonce = excluded.nonce, ciphertext = excluded.ciphertext, approved_at = excluded.approved_at",
+    )
+    .bind(node_id)
+    .bind(user_id)
+    .bind(vault::AEAD_ID)
+    .bind(sealed.nonce.as_slice())
+    .bind(sealed.ciphertext.as_slice())
+    .bind(now_ms())
+    .execute(&state.db)
+    .await?;
+    Ok(())
 }

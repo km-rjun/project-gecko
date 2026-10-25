@@ -11,12 +11,15 @@ pub mod db;
 pub mod error;
 pub mod extract;
 pub mod http;
+pub mod hub;
 pub mod keyring;
+pub mod logging;
 pub mod ratelimit;
 pub mod security;
 pub mod session;
 pub mod state;
 pub mod util;
+pub mod ws;
 
 /// Product display name from `branding.toml`, injected at build time.
 pub const BRAND_DISPLAY_NAME: &str = env!("BRAND_DISPLAY_NAME");

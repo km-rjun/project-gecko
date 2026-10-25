@@ -1,4 +1,7 @@
 //! Login sessions: cookie handling and request extractors (docs/02 §7).
+//!
+//! Each session has a stable `session_id` (keys the keyring and live sockets) and a cookie token
+//! that is rotated on login/unlock; only SHA-256(token) is stored.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -12,7 +15,7 @@ use crate::{
     error::{ApiError, ApiResult},
     keyring::VaultState,
     state::AppState,
-    util::{now_ms, random_token, token_hash},
+    util::{new_id, now_ms, random_token, token_hash},
 };
 
 /// Cookie name: `__Host-` prefix whenever cookies are `Secure` (TLS modes).
@@ -79,82 +82,95 @@ impl FromRequestParts<AppState> for ClientIp {
     }
 }
 
-/// Creates a session row and returns the raw token (to be placed in the cookie only).
+/// Creates a session; returns the raw cookie token and the stable session id.
 pub async fn create(
     state: &AppState,
     user_id: &str,
     ip: &str,
     user_agent: &str,
-) -> ApiResult<(zeroize::Zeroizing<String>, [u8; 32])> {
+) -> ApiResult<(zeroize::Zeroizing<String>, String)> {
     let token = random_token()?;
-    let hash = token_hash(&token);
+    let session_id = new_id();
     let now = now_ms();
     let expires =
         now + i64::try_from(state.settings.session_absolute.as_millis()).unwrap_or(i64::MAX);
-    sqlx::query("INSERT INTO auth_sessions (token_hash, user_id, created_at, last_seen_at, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .bind(hash.as_slice())
-        .bind(user_id)
-        .bind(now)
-        .bind(now)
-        .bind(expires)
-        .bind(ip)
-        .bind(user_agent.chars().take(256).collect::<String>())
-        .execute(&state.db)
-        .await?;
-    Ok((token, hash))
+    sqlx::query(
+        "INSERT INTO auth_sessions (token_hash, session_id, user_id, created_at, last_seen_at, expires_at, ip, user_agent) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(token_hash(&token).as_slice())
+    .bind(&session_id)
+    .bind(user_id)
+    .bind(now)
+    .bind(now)
+    .bind(expires)
+    .bind(ip)
+    .bind(user_agent.chars().take(256).collect::<String>())
+    .execute(&state.db)
+    .await?;
+    Ok((token, session_id))
 }
 
-/// Replaces the session token (login/unlock rotation). Keeps creation and expiry times.
-pub async fn rotate(
-    state: &AppState,
-    old: &[u8; 32],
-) -> ApiResult<(zeroize::Zeroizing<String>, [u8; 32])> {
+/// Replaces the cookie token of a session (unlock rotation). Keeps id, creation and expiry.
+pub async fn rotate(state: &AppState, session_id: &str) -> ApiResult<zeroize::Zeroizing<String>> {
     let token = random_token()?;
-    let hash = token_hash(&token);
     let updated = sqlx::query(
-        "UPDATE auth_sessions SET token_hash = ?, last_seen_at = ? WHERE token_hash = ?",
+        "UPDATE auth_sessions SET token_hash = ?, last_seen_at = ? WHERE session_id = ?",
     )
-    .bind(hash.as_slice())
+    .bind(token_hash(&token).as_slice())
     .bind(now_ms())
-    .bind(old.as_slice())
+    .bind(session_id)
     .execute(&state.db)
     .await?;
     if updated.rows_affected() != 1 {
         return Err(ApiError::Unauthenticated { needs_setup: false });
     }
-    state.keyring.rekey(old, hash);
-    Ok((token, hash))
+    Ok(token)
 }
 
-/// Deletes sessions of a user (optionally keeping one) and drops their MVKs.
-pub async fn revoke_user(
-    state: &AppState,
-    user_id: &str,
-    keep: Option<&[u8; 32]>,
-) -> ApiResult<()> {
-    match keep {
-        Some(k) => {
-            sqlx::query("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash != ?")
-                .bind(user_id)
-                .bind(k.as_slice())
-                .execute(&state.db)
-                .await?
-        }
-        None => {
-            sqlx::query("DELETE FROM auth_sessions WHERE user_id = ?")
-                .bind(user_id)
-                .execute(&state.db)
-                .await?
-        }
-    };
+/// Ends one session everywhere: DB row, keyring entry, live sockets.
+pub async fn end(state: &AppState, session_id: &str) -> ApiResult<()> {
+    sqlx::query("DELETE FROM auth_sessions WHERE session_id = ?")
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
+    state.keyring.remove(session_id);
+    state.hub.close_session(session_id);
+    Ok(())
+}
+
+/// Ends all sessions of a user, optionally keeping one.
+pub async fn revoke_user(state: &AppState, user_id: &str, keep: Option<&str>) -> ApiResult<()> {
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT session_id FROM auth_sessions WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&state.db)
+            .await?;
+    for id in ids.iter().filter(|id| Some(id.as_str()) != keep) {
+        end(state, id).await?;
+    }
     state.keyring.remove_user(user_id, keep);
+    Ok(())
+}
+
+/// Refreshes the session idle timer (throttled to once per minute).
+pub async fn touch(state: &AppState, session_id: &str) -> ApiResult<()> {
+    let now = now_ms();
+    sqlx::query(
+        "UPDATE auth_sessions SET last_seen_at = ? WHERE session_id = ? AND last_seen_at < ?",
+    )
+    .bind(now)
+    .bind(session_id)
+    .bind(now - 60_000)
+    .execute(&state.db)
+    .await?;
     Ok(())
 }
 
 /// An authenticated login session (vault may be locked).
 #[derive(Debug, Clone)]
 pub struct Session {
-    pub token_hash: [u8; 32],
+    pub session_id: String,
     pub user_id: String,
     pub username: String,
     pub is_admin: bool,
@@ -164,6 +180,7 @@ pub struct Session {
 
 #[derive(sqlx::FromRow)]
 struct SessionRow {
+    session_id: String,
     user_id: String,
     last_seen_at: i64,
     expires_at: i64,
@@ -181,45 +198,58 @@ async fn needs_setup(state: &AppState) -> bool {
 }
 
 impl Session {
-    /// Validates the cookie; `Ok(None)` when absent or invalid.
-    pub async fn load(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<Self>> {
-        let Some(token) = read_token(headers, state.settings.secure_cookies) else {
-            return Ok(None);
-        };
-        let hash = token_hash(&token);
-        let row: Option<SessionRow> = sqlx::query_as(
-            "SELECT s.user_id, s.last_seen_at, s.expires_at, u.username, u.is_admin, u.disabled \
-             FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
-        )
-        .bind(hash.as_slice())
-        .fetch_optional(&state.db)
-        .await?;
-        let Some(row) = row else { return Ok(None) };
+    fn validate(state: &AppState, row: SessionRow) -> Option<Self> {
         let now = now_ms();
         let idle_ms = i64::try_from(state.settings.session_idle.as_millis()).unwrap_or(i64::MAX);
         if row.disabled || now >= row.expires_at || now - row.last_seen_at > idle_ms {
-            sqlx::query("DELETE FROM auth_sessions WHERE token_hash = ?")
-                .bind(hash.as_slice())
-                .execute(&state.db)
-                .await?;
-            state.keyring.remove(&hash);
-            return Ok(None);
+            return None;
         }
-        if now - row.last_seen_at > 60_000 {
-            sqlx::query("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?")
-                .bind(now)
-                .bind(hash.as_slice())
-                .execute(&state.db)
-                .await?;
-        }
-        Ok(Some(Self {
-            token_hash: hash,
+        Some(Self {
+            session_id: row.session_id,
             user_id: row.user_id,
             username: row.username,
             is_admin: row.is_admin,
             expires_at: row.expires_at,
             ip: None,
-        }))
+        })
+    }
+
+    /// Validates the cookie; `Ok(None)` when absent or invalid (an invalid session is ended).
+    pub async fn load(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<Self>> {
+        let Some(token) = read_token(headers, state.settings.secure_cookies) else {
+            return Ok(None);
+        };
+        let row: Option<SessionRow> = sqlx::query_as(
+            "SELECT s.session_id, s.user_id, s.last_seen_at, s.expires_at, u.username, u.is_admin, u.disabled \
+             FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
+        )
+        .bind(token_hash(&token).as_slice())
+        .fetch_optional(&state.db)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let id = row.session_id.clone();
+        match Self::validate(state, row) {
+            Some(s) => {
+                touch(state, &s.session_id).await?;
+                Ok(Some(s))
+            }
+            None => {
+                end(state, &id).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Re-validates a session by id (used by long-lived sockets).
+    pub async fn by_id(state: &AppState, session_id: &str) -> ApiResult<Option<Self>> {
+        let row: Option<SessionRow> = sqlx::query_as(
+            "SELECT s.session_id, s.user_id, s.last_seen_at, s.expires_at, u.username, u.is_admin, u.disabled \
+             FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE s.session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&state.db)
+        .await?;
+        Ok(row.and_then(|r| Self::validate(state, r)))
     }
 }
 
@@ -252,10 +282,10 @@ impl FromRequestParts<AppState> for Unlocked {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> ApiResult<Self> {
         let session = Session::from_request_parts(parts, state).await?;
-        match state.keyring.state(&session.token_hash) {
+        match state.keyring.state(&session.session_id) {
             VaultState::Unlocked(mvk) => {
                 if parts.method != Method::GET && parts.method != Method::HEAD {
-                    state.keyring.touch(&session.token_hash);
+                    state.keyring.touch(&session.session_id);
                 }
                 Ok(Self { session, mvk })
             }

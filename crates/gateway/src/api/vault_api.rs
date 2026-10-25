@@ -49,8 +49,8 @@ pub async fn unlock(
             return Err(e.into());
         }
     };
-    state.keyring.insert(s.token_hash, &s.user_id, mvk);
-    let (token, _) = session::rotate(&state, &s.token_hash).await?;
+    state.keyring.insert(&s.session_id, &s.user_id, mvk);
+    let token = session::rotate(&state, &s.session_id).await?;
     audit::record(
         &state,
         Event::new("vault.unlock", Outcome::Success)
@@ -78,7 +78,10 @@ pub async fn lock(
     s: Session,
     OptionalJson(input): OptionalJson<LockInput>,
 ) -> ApiResult<StatusCode> {
-    state.keyring.remove(&s.token_hash);
+    state.keyring.remove(&s.session_id);
+    if input.disconnect_all {
+        state.hub.close_session(&s.session_id);
+    }
     audit::record(
         &state,
         Event::new("vault.lock", Outcome::Success)

@@ -26,7 +26,13 @@ fn assert_absent(haystack: &[u8], needles: &[&str]) {
     for n in needles {
         assert!(
             !haystack.windows(n.len()).any(|w| w == n.as_bytes()),
-            "{n:?} found in logs"
+            "{n:?} found in logs: {}",
+            String::from_utf8_lossy(haystack)
+                .lines()
+                .filter(|l| l.contains(n))
+                .map(|l| l.chars().take(400).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 }
@@ -91,4 +97,99 @@ async fn trace_logs_never_contain_secrets() {
         "wrong password here",
     ]);
     assert_absent(&logs, &needles);
+}
+
+/// A full SSH session (stored key, ephemeral password, typed text) logs no credentials and no
+/// terminal content (a password typed at a `sudo` prompt is terminal content).
+#[tokio::test(flavor = "current_thread")]
+async fn ssh_session_trace_logs_never_contain_secrets_or_terminal_data() {
+    use common::{ssh_target, ws};
+    use protocol_core::wire::Opcode;
+
+    let capture = Capture::default();
+    let sink = capture.clone();
+    // Same layering as production `init_tracing`, with everything enabled.
+    let subscriber = {
+        use tracing_subscriber::{Layer, layer::SubscriberExt};
+        let fmt = tracing_subscriber::fmt::layer().with_writer(move || sink.clone());
+        tracing_subscriber::registry().with(
+            fmt.with_filter(tracing_subscriber::filter::LevelFilter::TRACE)
+                .with_filter(gateway::logging::payload_guard()),
+        )
+    };
+    let _guard = tracing::subscriber::set_default(subscriber);
+    // Production `init()` bridges `log` records (russh logs through `log`) into tracing.
+    let _ = tracing_log::LogTracer::init();
+
+    let client_key = ssh_target::ed25519(7);
+    let target = ssh_target::start(ssh_target::ed25519(1), client_key.public_key().clone()).await;
+    let app = TestApp::new().await;
+    let addr = ws::serve(&app).await;
+    let (mut admin, _) = app.admin().await;
+    let pem = client_key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .expect("pem");
+    let (_, key_node) = admin
+        .post("/api/nodes", json!({ "name": "log-key", "protocol": "ssh", "host": "127.0.0.1", "port": target.addr.port(), "username": ssh_target::USER, "auth_method": "private_key", "secrets": { "private_key": pem.as_str() } }))
+        .await;
+    let (_, eph_node) = admin
+        .post("/api/nodes", json!({ "name": "log-eph", "protocol": "ssh", "host": "127.0.0.1", "port": target.addr.port(), "username": ssh_target::USER, "auth_method": "password", "ephemeral_auth": true }))
+        .await;
+    let mut w = ws::open(addr, admin.cookie.as_deref().expect("cookie")).await;
+
+    w.send_json(Opcode::StreamOpen, 1, &json!({ "node_id": key_node["id"] }))
+        .await;
+    w.expect(Opcode::HostIdentityPrompt).await;
+    w.send_json(Opcode::HostIdentityDecision, 1, &json!({ "approve": true }))
+        .await;
+    w.expect(Opcode::StreamOpened).await;
+    w.type_text(1, "typed-sudo-password-xyzzy\r").await;
+    w.read_until(1, "xyzzy").await;
+
+    w.send_json(Opcode::StreamOpen, 2, &json!({ "node_id": eph_node["id"] }))
+        .await;
+    w.expect(Opcode::CredentialRequest).await;
+    w.send_json(
+        Opcode::CredentialSubmit,
+        2,
+        &json!({ "password": ssh_target::PASSWORD }),
+    )
+    .await;
+    w.expect(Opcode::HostIdentityPrompt).await;
+    w.send_json(Opcode::HostIdentityDecision, 2, &json!({ "approve": true }))
+        .await;
+    w.expect(Opcode::StreamOpened).await;
+    w.send(Opcode::StreamClose, 1, &[0, 100]).await;
+    w.send(Opcode::StreamClose, 2, &[0, 100]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let logs = capture.0.lock().expect("lock").clone();
+    assert!(!logs.is_empty(), "subscriber captured nothing");
+    let text = String::from_utf8_lossy(&logs);
+    assert!(
+        text.contains("russh"),
+        "russh log records were not captured"
+    );
+    assert!(
+        text.contains("tungstenite"),
+        "tungstenite log records were not captured"
+    );
+    let key_body: String = pem
+        .lines()
+        .nth(1)
+        .expect("pem body")
+        .chars()
+        .take(40)
+        .collect();
+    assert_absent(
+        &logs,
+        &[
+            ssh_target::PASSWORD,
+            "typed-sudo-password",
+            "BEGIN OPENSSH PRIVATE KEY",
+            key_body.as_str(),
+            "log-key",
+            "log-eph",
+        ],
+    );
 }

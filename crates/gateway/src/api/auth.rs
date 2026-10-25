@@ -34,7 +34,7 @@ pub async fn me(
             needs_setup: users == 0,
         });
     };
-    let vault = match state.keyring.state(&s.token_hash) {
+    let vault = match state.keyring.state(&s.session_id) {
         crate::keyring::VaultState::Unlocked(_) => "unlocked",
         crate::keyring::VaultState::IdleLocked => {
             audit::vault_lock(&state, &s.user_id, "idle").await;
@@ -46,7 +46,7 @@ pub async fn me(
     Ok(Json(json!({
         "user": { "id": s.user_id, "username": s.username, "is_admin": s.is_admin },
         "vault": vault,
-        "idle_lock_in_s": state.keyring.idle_lock_in(&s.token_hash),
+        "idle_lock_in_s": state.keyring.idle_lock_in(&s.session_id),
         "session_expires_in_s": expires_in,
     })))
 }
@@ -88,14 +88,14 @@ pub async fn setup(
     tx.commit().await?;
     bootstrap::consume(&state);
 
-    let (token, hash) = session::create(
+    let (token, sid) = session::create(
         &state,
         &user_id,
         &ip.to_string(),
         &session::user_agent(&headers),
     )
     .await?;
-    state.keyring.insert(hash, &user_id, enrolled.mvk);
+    state.keyring.insert(&sid, &user_id, enrolled.mvk);
     audit::record(
         &state,
         Event::new("auth.bootstrap", Outcome::Success)
@@ -179,14 +179,14 @@ pub async fn login(
     if let Some(new_record) = upgraded {
         update_key_record(&state, &row.id, &new_record, false).await?;
     }
-    let (token, hash) = session::create(
+    let (token, sid) = session::create(
         &state,
         &row.id,
         &ip.to_string(),
         &session::user_agent(&headers),
     )
     .await?;
-    state.keyring.insert(hash, &row.id, mvk);
+    state.keyring.insert(&sid, &row.id, mvk);
     audit::record(
         &state,
         Event::new("auth.login", Outcome::Success)
@@ -203,11 +203,7 @@ pub async fn login(
 
 /// `POST /api/auth/logout`
 pub async fn logout(State(state): State<AppState>, s: Session) -> ApiResult<Response> {
-    sqlx::query("DELETE FROM auth_sessions WHERE token_hash = ?")
-        .bind(s.token_hash.as_slice())
-        .execute(&state.db)
-        .await?;
-    state.keyring.remove(&s.token_hash);
+    session::end(&state, &s.session_id).await?;
     audit::record(
         &state,
         Event::new("auth.logout", Outcome::Success)
@@ -271,14 +267,14 @@ pub async fn recover(
     };
     update_key_record(&state, &row.id, &enrolled.record, true).await?;
     session::revoke_user(&state, &row.id, None).await?;
-    let (token, hash) = session::create(
+    let (token, sid) = session::create(
         &state,
         &row.id,
         &ip.to_string(),
         &session::user_agent(&headers),
     )
     .await?;
-    state.keyring.insert(hash, &row.id, enrolled.mvk);
+    state.keyring.insert(&sid, &row.id, enrolled.mvk);
     audit::record(
         &state,
         Event::new("vault.recovery_used", Outcome::Success)

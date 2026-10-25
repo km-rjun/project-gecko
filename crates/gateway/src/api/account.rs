@@ -57,7 +57,7 @@ pub async fn change_password(
         }
     };
     update_key_record(&state, &s.user_id, &new_record, true).await?;
-    session::revoke_user(&state, &s.user_id, Some(&s.token_hash)).await?;
+    session::revoke_user(&state, &s.user_id, Some(s.session_id.as_str())).await?;
     audit::record(
         &state,
         Event::new("vault.password_changed", Outcome::Success)

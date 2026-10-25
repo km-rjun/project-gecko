@@ -64,5 +64,11 @@ jobs:
           ssh -i dev/.generated/devuser_ed25519 -p 2222 \
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
             devuser@127.0.0.1 'echo key-auth-ok'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: gateway SSH tests against the real OpenSSH target
+        env:
+          GATEWAY_LIVE_SSH: 127.0.0.1:2222
+        run: cargo test -p gateway --test live_ssh --locked
       - if: always()
         run: docker compose -f docker-compose.dev.yml down -v

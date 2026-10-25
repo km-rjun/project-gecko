@@ -126,12 +126,17 @@ fn harden_process() {
 }
 
 fn init_tracing(config: &Config) -> anyhow::Result<()> {
+    use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
     let filter = EnvFilter::try_new(&config.log).context("invalid GATEWAY_LOG filter")?;
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match config.log_format {
-        LogFormat::Text => builder.init(),
-        LogFormat::Json => builder.json().init(),
-    }
+    let guard = gateway::logging::payload_guard();
+    let fmt = match config.log_format {
+        LogFormat::Text => tracing_subscriber::fmt::layer().boxed(),
+        LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
+    };
+    tracing_subscriber::registry()
+        .with(fmt.with_filter(filter).with_filter(guard))
+        .try_init()
+        .context("logging already initialised")?;
     Ok(())
 }
 

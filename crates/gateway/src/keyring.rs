@@ -1,4 +1,4 @@
-//! In-memory keyring: session token hash → unwrapped MVK. Never persisted; a restart locks every vault.
+//! In-memory keyring: session id → unwrapped MVK. Never persisted; a restart locks every vault.
 
 use std::{
     collections::HashMap,
@@ -24,7 +24,7 @@ pub enum VaultState {
 }
 
 pub struct Keyring {
-    entries: Mutex<HashMap<[u8; 32], Entry>>,
+    entries: Mutex<HashMap<String, Entry>>,
     idle_limit: Duration,
 }
 
@@ -42,15 +42,15 @@ impl Keyring {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<[u8; 32], Entry>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn insert(&self, session: [u8; 32], user_id: &str, mvk: Mvk) {
+    pub fn insert(&self, session: &str, user_id: &str, mvk: Mvk) {
         self.lock().insert(
-            session,
+            session.to_owned(),
             Entry {
                 user_id: user_id.to_owned(),
                 mvk: Arc::new(mvk),
@@ -59,16 +59,8 @@ impl Keyring {
         );
     }
 
-    /// Moves an entry to a rotated session token.
-    pub fn rekey(&self, old: &[u8; 32], new: [u8; 32]) {
-        let mut map = self.lock();
-        if let Some(entry) = map.remove(old) {
-            map.insert(new, entry);
-        }
-    }
-
     /// Current vault state; enforces the idle limit.
-    pub fn state(&self, session: &[u8; 32]) -> VaultState {
+    pub fn state(&self, session: &str) -> VaultState {
         let mut map = self.lock();
         match map.get(session) {
             None => VaultState::Locked,
@@ -81,14 +73,14 @@ impl Keyring {
     }
 
     /// Records user activity (mutating request or session input).
-    pub fn touch(&self, session: &[u8; 32]) {
+    pub fn touch(&self, session: &str) {
         if let Some(e) = self.lock().get_mut(session) {
             e.last_activity = Instant::now();
         }
     }
 
     /// Seconds until idle lock, if unlocked.
-    pub fn idle_lock_in(&self, session: &[u8; 32]) -> Option<u64> {
+    pub fn idle_lock_in(&self, session: &str) -> Option<u64> {
         self.lock().get(session).map(|e| {
             self.idle_limit
                 .saturating_sub(e.last_activity.elapsed())
@@ -97,14 +89,14 @@ impl Keyring {
     }
 
     /// Drops one session's MVK. Returns whether it was unlocked.
-    pub fn remove(&self, session: &[u8; 32]) -> bool {
+    pub fn remove(&self, session: &str) -> bool {
         self.lock().remove(session).is_some()
     }
 
     /// Drops every MVK of `user_id`, optionally keeping one session.
-    pub fn remove_user(&self, user_id: &str, keep: Option<&[u8; 32]>) {
+    pub fn remove_user(&self, user_id: &str, keep: Option<&str>) {
         self.lock()
-            .retain(|k, e| e.user_id != user_id || Some(k) == keep);
+            .retain(|k, e| e.user_id != user_id || Some(k.as_str()) == keep);
     }
 
     /// Removes idle entries; returns their user ids (for audit).

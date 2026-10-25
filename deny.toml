@@ -5,6 +5,12 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # `rsa` (via russh): non-constant-time private-key operations, no fixed release. The gateway
+    # never performs RSA private-key operations: RSA user keys are rejected (decision D-044);
+    # RSA host-key verification uses only the public key. Revisit when a fixed `rsa` ships.
+    { id = "RUSTSEC-2023-0071", reason = "RSA private keys rejected; only public-key RSA operations are used (D-044)" },
+]
 
 [licenses]
 version = 2

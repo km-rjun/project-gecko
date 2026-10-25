@@ -1,6 +1,9 @@
 //! Test harness: a gateway on a temporary data dir with cheap KDF parameters.
 #![allow(dead_code)]
 
+pub mod ssh_target;
+pub mod ws;
+
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
