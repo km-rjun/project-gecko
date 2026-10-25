@@ -45,3 +45,9 @@ unwrap_used = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Keep Argon2 fast in debug builds/tests (64 MiB derivations are very slow unoptimised).
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
